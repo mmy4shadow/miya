@@ -1,0 +1,35 @@
+{
+  "name": "miya",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal local OpenClaw plugin scaffold for Miya with Phase 1-6 foundations.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "src/",
+    "skill/",
+    "docs/",
+    "scripts/",
+    "README.md",
+    "openclaw.plugin.json"
+  ],
+  "scripts": {
+    "check": "node ./scripts/check.mjs",
+    "test": "node --test ./tests/workloop.test.mjs ./tests/workflow-queue.test.mjs ./tests/workflow-start-parser.test.mjs ./tests/workflow-commands.test.mjs ./tests/session-store-selfheal.test.mjs ./tests/dispatcher-selftest.test.mjs ./tests/desktop-worker-runner.test.mjs ./tests/probe-command-registration.test.mjs ./tests/runtime-http.test.mjs",
+    "smoke": "node ./scripts/smoke.mjs",
+    "acceptance": "node ./scripts/acceptance.mjs",
+    "dispatcher:selftest": "node ./scripts/dispatcher-selftest.mjs",
+    "models": "powershell -NoProfile -Command \"Get-ChildItem -Directory .\\model | Select-Object -ExpandProperty Name\"",
+    "vision:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/setup-vision-runtime.ps1",
+    "voice:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/setup-voice-runtime.ps1",
+    "image:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/setup-image-runtime.ps1"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
