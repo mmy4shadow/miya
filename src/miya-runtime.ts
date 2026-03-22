@@ -13,12 +13,14 @@ import { recordWizardExecution } from "./wizard-tools.ts";
 import { recallMemoryLite } from "./memory-lite-runtime.ts";
 import { buildPersonaLiteBlock } from "./persona-lite-runtime.ts";
 import { assembleMiyaPromptPrefix } from "./prompt-assembly.ts";
+import { getContinuousWorkStatus } from "./workloop.ts";
 
 const PROMPT_MARKER = "[System: 你现在是 Miya]";
 const MIYA_PING_TOOL = "miya_system_ping";
 const MIYA_CAPTURE_TOOL = "miya_desktop_capture";
 const MIYA_INSPECT_TOOL = "miya_desktop_inspect_ui";
 const MIYA_CLICK_TOOL = "miya_desktop_click";
+const MIYA_STATUS_TOOL = "miya_status_get";
 
 function getPluginConfig(api: any): MiyaPluginConfig {
   return (api?.pluginConfig ?? api?.config?.plugins?.entries?.miya?.config ?? {}) as MiyaPluginConfig;
@@ -188,8 +190,80 @@ export function registerPingTool(api: any) {
   });
 }
 
+export function registerStatusTool(api: any) {
+  const config = getPluginConfig(api);
+
+  api.registerTool({
+    name: MIYA_STATUS_TOOL,
+    description: "Return Miya's dispatcher-backed continuous-work status snapshot.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    async execute() {
+      const payload = await getContinuousWorkStatus(config);
+      await updateRuntimeState({
+        dispatcherProbe: {
+          updatedAt: new Date().toISOString(),
+          ok: payload.status === "ok",
+          payload: payload.status === "ok" ? payload.dispatcher : undefined,
+          error: payload.status === "error" ? payload.reason : undefined,
+        },
+      }, config);
+      return {
+        content: [{ type: "text", text: toJsonText(payload) }],
+        structuredContent: payload,
+      };
+    },
+  });
+}
+
 export function registerRuntimeHttp(api: any) {
   const config = getPluginConfig(api);
+
+  api.registerHttpRoute({
+    path: "/plugins/miya/status",
+    auth: "gateway",
+    match: "prefix",
+    async handler(req: any, res: any) {
+      const method = String(req?.method ?? "GET").toUpperCase();
+      const url = new URL(String(req?.url ?? "/plugins/miya/status"), "http://127.0.0.1");
+      const action = url.pathname.replace(/^\/plugins\/miya\/status\/?/, "").trim().toLowerCase();
+
+      if (method !== "GET" && method !== "POST") {
+        sendJson(res, 405, { status: "error", error: "method_not_allowed", allow: ["GET", "POST"] });
+        return;
+      }
+
+      if (!action || action === "help") {
+        sendJson(res, 200, {
+          status: "ok",
+          route: "/plugins/miya/status/:action",
+          actions: {
+            get: { method: "GET|POST", body: {} },
+          },
+        });
+        return;
+      }
+
+      if (action !== "get") {
+        sendJson(res, 404, { status: "error", error: `unknown_action: ${action}` });
+        return;
+      }
+
+      const payload = await getContinuousWorkStatus(config);
+      await updateRuntimeState({
+        dispatcherProbe: {
+          updatedAt: new Date().toISOString(),
+          ok: payload.status === "ok",
+          payload: payload.status === "ok" ? payload.dispatcher : undefined,
+          error: payload.status === "error" ? payload.reason : undefined,
+        },
+      }, config);
+      sendJson(res, payload.status === "ok" ? 200 : 500, payload);
+    },
+  });
 
   api.registerHttpRoute({
     path: "/plugins/miya/desktop",
@@ -293,21 +367,49 @@ export function registerRuntimeHttp(api: any) {
         }
 
         if (action === "awake") {
+          const completed: string[] = [];
           const ping = await runPythonPing(config);
           if (ping?.status !== "pong" && ping?.status !== "ok") {
-            sendJson(res, 500, buildAwakeStepFailure("ping", ping as Record<string, any>, []));
+            const failure = buildAwakeStepFailure("ping", ping as Record<string, any>, completed);
+            await persistAwakeProbe(config, {
+              ok: false,
+              completed,
+              failedStep: failure.failedStep,
+              error: failure.error,
+              result: failure,
+            });
+            sendJson(res, 500, failure);
             return;
           }
+          completed.push("ping");
           const capture = await executeDesktopWorkerAction("capture", { maxEdge: 960, jpegQuality: 55 }, config) as Record<string, any>;
           if (capture?.status !== "ok") {
-            sendJson(res, 500, buildAwakeStepFailure("capture", capture, ["ping"]));
+            const failure = buildAwakeStepFailure("capture", capture, completed);
+            await persistAwakeProbe(config, {
+              ok: false,
+              completed,
+              failedStep: failure.failedStep,
+              error: failure.error,
+              result: failure,
+            });
+            sendJson(res, 500, failure);
             return;
           }
+          completed.push("capture");
           const inspect = await executeDesktopWorkerAction("inspect_ui", { maxItems: 50 }, config) as Record<string, any>;
           if (inspect?.status !== "ok") {
-            sendJson(res, 500, buildAwakeStepFailure("inspect_ui", inspect, ["ping", "capture"]));
+            const failure = buildAwakeStepFailure("inspect_ui", inspect, completed);
+            await persistAwakeProbe(config, {
+              ok: false,
+              completed,
+              failedStep: failure.failedStep,
+              error: failure.error,
+              result: failure,
+            });
+            sendJson(res, 500, failure);
             return;
           }
+          completed.push("inspect_ui");
           const clickTarget = resolveInspectClickTarget(inspect);
           const click = await executeDesktopWorkerAction("click", {
             x: clickTarget.x,
@@ -315,10 +417,25 @@ export function registerRuntimeHttp(api: any) {
             dryRun: true,
           }, config) as Record<string, any>;
           if (click?.status !== "ok") {
-            sendJson(res, 500, buildAwakeStepFailure("click", { ...click, clickTarget }, ["ping", "capture", "inspect_ui"]));
+            const failure = buildAwakeStepFailure("click", { ...click, clickTarget }, completed);
+            await persistAwakeProbe(config, {
+              ok: false,
+              completed,
+              failedStep: failure.failedStep,
+              error: failure.error,
+              result: failure,
+            });
+            sendJson(res, 500, failure);
             return;
           }
-          sendJson(res, 200, { status: "ok", completed: ["ping", "capture", "inspect_ui", "click"], ping, capture, inspect, clickTarget, click });
+          completed.push("click");
+          const success = { status: "ok", completed, ping, capture, inspect, clickTarget, click };
+          await persistAwakeProbe(config, {
+            ok: true,
+            completed,
+            result: success,
+          });
+          sendJson(res, 200, success);
           return;
         }
 
@@ -770,12 +887,53 @@ function sendJson(res: any, statusCode: number, payload: unknown) {
 
 function buildAwakeStepFailure(step: string, payload: Record<string, any>, completed: string[]) {
   return {
-    status: "error",
+    status: payload?.human_mutex === true ? "blocked-external" : "error",
     failedStep: step,
     completed,
+    blockerType: payload?.human_mutex === true ? "external" : undefined,
     error: typeof payload?.error === "string" ? payload.error : `step ${step} failed`,
     payload,
   };
+}
+
+async function persistAwakeProbe(
+  config: MiyaPluginConfig | undefined,
+  payload: {
+    ok: boolean;
+    completed: string[];
+    failedStep?: string;
+    error?: string;
+    result: Record<string, any>;
+  },
+) {
+  const resultPayload = payload.result;
+  const resultState = payload.ok
+    ? "ok"
+    : resultPayload?.status === "blocked-external"
+      ? "blocked"
+      : "failed";
+  await appendEvidenceRecord(createEvidenceRecord({
+    action: "awake",
+    result: resultState,
+    reason: payload.error ?? (payload.ok ? "acceptance passed" : `step ${payload.failedStep ?? "unknown"} failed`),
+    target: payload.failedStep ?? "operation-miya-awake",
+    metadata: {
+      completed: payload.completed,
+      status: resultPayload?.status,
+      blockerType: resultPayload?.blockerType,
+      failedStep: payload.failedStep,
+    },
+  }), config);
+  await updateRuntimeState({
+    awakeProbe: {
+      updatedAt: new Date().toISOString(),
+      ok: payload.ok,
+      completed: payload.completed,
+      failedStep: payload.failedStep,
+      error: payload.error,
+      payload: payload.result,
+    },
+  }, config);
 }
 
 function resolveInspectClickTarget(inspect: Record<string, any>) {

@@ -37,8 +37,9 @@ export async function getVoiceStatus(config?: MiyaPluginConfig): Promise<VoiceSt
       mappedAsset: resolved.speakerId.modelPath || speakerIdAsset?.path || "",
     },
     notes: [
-      "Voice stages are config placeholders until an external runtime or worker is attached.",
-      "Only asset mapping is implemented in-plugin right now; no ASR/TTS/VAD execution is claimed.",
+      "ASR, TTS, speaker identify, and VAD are all wired through the local voice sidecar contract.",
+      "VAD now prefers a local Silero neural model on CUDA and falls back to energy-based segmentation only when that stack is unavailable.",
+      "Speaker identify prefers embedding-grade verification when the optional local speaker stack is present and falls back only when that stack is unavailable.",
     ],
   };
 }

@@ -172,7 +172,7 @@ export function registerMiyaWorkerHealthCommand(api: any) {
           ok: diagnostics.worker.ok,
           payload: {
             worker: diagnostics.worker,
-            evidence: diagnostics.evidence[0],
+            evidence: diagnostics.workerEvidence,
           },
         },
       }, pluginConfig);

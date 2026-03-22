@@ -17,4 +17,7 @@ test("dispatcher selftest reports multi-task chaining and restart recovery scena
   assert.equal(payload.restartRecovery?.checks?.firstRunSelectedRunningTask, true);
   assert.equal(payload.restartRecovery?.checks?.secondRunSelectedSameTask, true);
   assert.equal(payload.restartRecovery?.checks?.selectionStableAcrossRestart, true);
+
+  assert.equal(payload.namespacedTaskIds?.checks?.namespacedTaskParsedAsBlocked, true);
+  assert.equal(payload.namespacedTaskIds?.checks?.completedBaselineNotOverwritten, true);
 });

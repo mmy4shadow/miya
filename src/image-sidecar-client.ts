@@ -42,12 +42,22 @@ export async function runImageGenerate(
 
   try {
     const imageConfig = resolveImageRuntimeConfig(config);
-    const sidecarPath = imageConfig.sidecarPath || path.join(resolveMiyaPaths(config).pluginRoot, "worker", "image_sidecar.py");
+    const resolvedPaths = resolveMiyaPaths(config);
+    const sidecarPath = imageConfig.sidecarPath || path.join(resolvedPaths.pluginRoot, "worker", "image_sidecar.py");
     if (imageConfig.enabled && fs.existsSync(sidecarPath)) {
       const payload = await runJsonSidecar(
         imageConfig.pythonCommand,
         [sidecarPath],
-        { input, models, imageConfig },
+        {
+          input,
+          models,
+          imageConfig,
+          paths: {
+            pluginRoot: resolvedPaths.pluginRoot,
+            stateRoot: resolvedPaths.stateRoot,
+            artifactRoot: path.join(resolvedPaths.pluginRoot, "state", "image"),
+          },
+        },
         imageConfig.timeoutMs,
       );
       return {
@@ -68,6 +78,6 @@ export async function runImageGenerate(
       request: input,
     };
   } finally {
-    releaseVramLane(leaseResult.lease?.id, "image");
+    releaseVramLane(leaseResult.lease?.id, "image", config);
   }
 }

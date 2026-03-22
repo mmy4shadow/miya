@@ -55,6 +55,12 @@ type DesktopCandidate = {
 type DesktopRunResult = Record<string, unknown>;
 const MIN_VISION_CONFIDENCE = 0.35;
 
+function isExternalDesktopBlock(payload: Record<string, any> | undefined) {
+  return payload?.human_mutex === true
+    || String(payload?.status ?? "").toLowerCase() === "blocked-external"
+    || String(payload?.blockerType ?? "").toLowerCase() === "external";
+}
+
 function normalizeText(input: unknown) {
   return String(input ?? "").trim().toLowerCase();
 }
@@ -538,12 +544,15 @@ function buildFailure(
   runFile?: string,
   extra: Record<string, unknown> = {},
 ) {
+  const blockedExternal = isExternalDesktopBlock(extra?.payload as Record<string, any> | undefined);
   return {
-    status: "error",
+    status: blockedExternal ? "blocked-external" : "error",
     runId,
     goal,
-    code,
+    code: blockedExternal ? "blocked_external" : code,
     error: message,
+    blockerType: blockedExternal ? "external" : undefined,
+    hint: blockedExternal ? "Human mutex is active; pause desktop actions until keyboard/mouse activity stops." : undefined,
     model,
     evidence: {
       runFile,
@@ -964,6 +973,7 @@ export async function runDesktopIntent(
       const failure = buildFailure(runId, goal, "click_failed", String(clickPayload?.error ?? "click failed"), startedAt, model, undefined, {
         target: selectedTarget,
         decision,
+        payload: clickPayload,
       });
       const runFile = await persistDesktopRun({ ...artifact, ...failure }, goal, false, "click_failed", config);
       return {

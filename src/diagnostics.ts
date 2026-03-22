@@ -9,6 +9,19 @@ import { probeWorkerHealth } from "./worker-client.ts";
 import { getWizardStatus } from "./wizard.ts";
 import { readRuntimeState } from "./runtime-state.ts";
 
+const RUNTIME_VALIDATION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function isRecentSuccessfulProbe(
+  probe: { ok?: boolean; updatedAt?: string } | undefined,
+  nowMs: number,
+  maxAgeMs = RUNTIME_VALIDATION_MAX_AGE_MS,
+) {
+  if (!probe?.ok || !probe.updatedAt) return false;
+  const updatedAtMs = Date.parse(probe.updatedAt);
+  if (!Number.isFinite(updatedAtMs)) return false;
+  return nowMs - updatedAtMs <= maxAgeMs;
+}
+
 export type MiyaDiagnostics = {
   plugin: string;
   paths: ReturnType<typeof resolveMiyaPaths>;
@@ -22,6 +35,8 @@ export type MiyaDiagnostics = {
   vramScheduler: ReturnType<typeof getVramSchedulerStatus>;
   wizard: Awaited<ReturnType<typeof getWizardStatus>>;
   acceptanceChecklist: { item: string; status: "done" | "todo" | "blocked"; note?: string }[];
+  workerEvidence: ReturnType<typeof createEvidenceRecord>;
+  capabilitiesEvidence: ReturnType<typeof createEvidenceRecord>;
   evidence: ReturnType<typeof createEvidenceRecord>[];
 };
 
@@ -37,12 +52,34 @@ export async function collectDiagnostics(config?: MiyaPluginConfig): Promise<Miy
     readEvidenceTail(12, config),
     readRuntimeState(config),
   ]);
+  const nowMs = Date.now();
   const runtimeValidated = Boolean(
-    runtimeState?.voiceProbe?.ok
-    || runtimeState?.imageProbe?.ok
-    || runtimeState?.desktopRunProbe?.ok
-    || runtimeState?.awakeProbe?.ok,
+    isRecentSuccessfulProbe(runtimeState?.workerHealthProbe, nowMs)
+    || isRecentSuccessfulProbe(runtimeState?.voiceProbe, nowMs)
+    || isRecentSuccessfulProbe(runtimeState?.imageProbe, nowMs)
+    || isRecentSuccessfulProbe(runtimeState?.desktopRunProbe, nowMs)
+    || isRecentSuccessfulProbe(runtimeState?.awakeProbe, nowMs),
   );
+
+  const workerEvidence = createEvidenceRecord({
+    action: "health_probe",
+    result: worker.ok ? "ok" : worker.state === "disabled" || worker.state === "skipped" ? "blocked" : "failed",
+    reason: worker.state,
+    target: worker.target,
+    metadata: {
+      detail: worker.detail,
+      observedAt: worker.observedAt,
+    },
+  });
+  const capabilitiesEvidence = createEvidenceRecord({
+    action: "capabilities_probe",
+    result: "ok",
+    reason: "diagnostics_compiled",
+    metadata: {
+      features: resolveFeatureFlags(config),
+      assetsPresent: modelAssets.filter((asset) => asset.exists).map((asset) => asset.key),
+    },
+  });
 
   return {
     plugin: "miya",
@@ -65,29 +102,14 @@ export async function collectDiagnostics(config?: MiyaPluginConfig): Promise<Miy
       { item: "VRAM scheduler lanes defined", status: "done" },
       { item: "Wizard/training descriptors defined", status: "done" },
       { item: "Wizard runner can execute local staged jobs", status: "done" },
-      { item: "External runtime validation batch completed", status: runtimeValidated ? "done" : "todo", note: runtimeValidated ? "Recent runtime-state contains successful live probe evidence." : "Needs manual worker/model runtime verification." },
+      { item: "External runtime validation batch completed", status: runtimeValidated ? "done" : "todo", note: runtimeValidated ? "Recent (<24h) runtime-state contains successful live probe evidence." : "Needs fresh worker/model runtime verification (or recent runtime-state evidence within 24h)." },
     ],
+    workerEvidence,
+    capabilitiesEvidence,
     evidence: [
       ...recentEvidence,
-      createEvidenceRecord({
-        action: "health_probe",
-        result: worker.ok ? "ok" : worker.state === "disabled" || worker.state === "skipped" ? "blocked" : "failed",
-        reason: worker.state,
-        target: worker.target,
-        metadata: {
-          detail: worker.detail,
-          observedAt: worker.observedAt,
-        },
-      }),
-      createEvidenceRecord({
-        action: "capabilities_probe",
-        result: "ok",
-        reason: "diagnostics_compiled",
-        metadata: {
-          features: resolveFeatureFlags(config),
-          assetsPresent: modelAssets.filter((asset) => asset.exists).map((asset) => asset.key),
-        },
-      }),
+      workerEvidence,
+      capabilitiesEvidence,
     ].slice(-20),
   };
 }

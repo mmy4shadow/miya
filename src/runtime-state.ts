@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { resolveMiyaPaths, DEFAULT_PLUGIN_ROOT } from "./paths.ts";
 import type { MiyaPluginConfig } from "./config.ts";
+import { replaceFileAtomic } from "./atomic-file.ts";
 
 const EMPTY_RUNTIME_STATE_UPDATED_AT = new Date(0).toISOString();
 
@@ -206,7 +207,7 @@ export async function updateRuntimeState(
   await fs.mkdir(stateDir, { recursive: true });
   try {
     await fs.writeFile(tempFile, JSON.stringify(next, null, 2), "utf8");
-    await fs.rename(tempFile, stateFile);
+    await replaceFileAtomic(tempFile, stateFile);
     return next;
   } catch (error) {
     try {

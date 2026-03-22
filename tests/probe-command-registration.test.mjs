@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import path from "node:path";
 
 const moduleUrl = pathToFileURL(path.resolve("F:/openclaw/miya/src/probe-command.ts")).href;
-const { registerMiyaProbeCommand, registerMiyaAwakeCommand } = await import(moduleUrl);
+const { registerMiyaProbeCommand, registerMiyaAwakeCommand, registerMiyaWorkerHealthCommand } = await import(moduleUrl);
 
 function makeTempWorker(mode = "success") {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "miya-awake-test-"));
@@ -41,6 +41,10 @@ elif command == "click":
 else:
     print(json.dumps({"status": "error", "error": f"unknown command: {command}"}))
 `, "utf8");
+  fs.writeFileSync(path.join(workerDir, "ping_worker.py"), `
+import json
+print(json.dumps({"status": "pong", "worker": "test-worker"}))
+`, "utf8");
   return root;
 }
 
@@ -61,6 +65,54 @@ test("registerMiyaProbeCommand only registers the non-conflicting telegram-safe 
 
   const names = commands.map((entry) => entry.name);
   assert.deepEqual(names, ["miya-status"]);
+});
+
+test("registerMiyaWorkerHealthCommand persists the fresh health probe evidence into runtime-state", async (t) => {
+  const tempRoot = makeTempWorker("success");
+  t.after(() => {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  const commands = [];
+  const api = {
+    registerCommand(spec) {
+      commands.push(spec);
+    },
+  };
+  registerMiyaWorkerHealthCommand(api);
+
+  const health = commands.find((entry) => entry.name === "miya-health");
+  assert.ok(health, "miya-health command should be registered");
+
+  const result = await health.handler({
+    config: {
+      plugins: {
+        entries: {
+          miya: {
+            config: {
+              pluginRoot: tempRoot,
+              desktopWorker: {
+                enabled: true,
+                transport: "command",
+                timeoutMs: 3000,
+                probe: { mode: "command", command: "python", args: [] },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.match(result.text, /state: healthy/);
+
+  const runtimeState = readRuntimeState(tempRoot);
+  assert.equal(runtimeState.workerHealthProbe.ok, true);
+  assert.equal(runtimeState.workerHealthProbe.payload.worker.state, "healthy");
+  assert.equal(runtimeState.workerHealthProbe.payload.evidence.action, "health_probe");
+  assert.equal(runtimeState.workerHealthProbe.payload.evidence.reason, "healthy");
+  assert.match(runtimeState.workerHealthProbe.payload.evidence.target, /^python\s+/);
+  assert.match(runtimeState.workerHealthProbe.payload.evidence.metadata.detail, /"status":\s*"pong"/);
 });
 
 test("registerMiyaAwakeCommand persists successful acceptance runs into runtime-state", async (t) => {

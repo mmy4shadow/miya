@@ -130,6 +130,7 @@ def ensure_server(
     mmproj_file: Path,
     runtime_root: Path,
     timeout_ms: int,
+    gpu_layers: int,
     host: str = "127.0.0.1",
     port: int = 43112,
 ) -> Tuple[str, Dict[str, Any]]:
@@ -164,6 +165,8 @@ def ensure_server(
         "8192",
         "--jinja",
     ]
+    if gpu_layers > 0:
+        command.extend(["-ngl", str(gpu_layers)])
 
     creationflags = 0
     if os.name == "nt":
@@ -186,6 +189,7 @@ def ensure_server(
             "binary": str(binary),
             "model": str(model_file),
             "mmproj": str(mmproj_file),
+            "gpuLayers": gpu_layers,
             "stdout": str(stdout_path),
             "stderr": str(stderr_path),
             "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -301,6 +305,7 @@ def main() -> int:
     payload = read_input()
     vision = payload.get("visionConfig") if isinstance(payload.get("visionConfig"), dict) else {}
     timeout_ms = int((vision or {}).get("timeoutMs", 15000))
+    gpu_layers = int((vision or {}).get("gpuLayers", 99))
     model_path = str((vision or {}).get("modelPath", ""))
     runtime_root = Path(str((vision or {}).get("runtimeRoot", "")))
     binary = find_binary(str(runtime_root), str((vision or {}).get("binaryPath", "")))
@@ -331,7 +336,7 @@ def main() -> int:
             }
         )
 
-    base_url, server_meta = ensure_server(binary, model_file, mmproj_file, runtime_root, timeout_ms=timeout_ms)
+    base_url, server_meta = ensure_server(binary, model_file, mmproj_file, runtime_root, timeout_ms=timeout_ms, gpu_layers=gpu_layers)
     if server_meta.get("status") == "startup_failed":
         return emit(
             {

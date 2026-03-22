@@ -7,13 +7,15 @@ import { EventEmitter } from "node:events";
 import { pathToFileURL } from "node:url";
 
 const runtimeUrl = pathToFileURL(path.resolve("F:/openclaw/miya/src/miya-runtime.ts")).href;
-const { registerRuntimeHttp } = await import(runtimeUrl);
+const { registerRuntimeHttp, registerStatusTool } = await import(runtimeUrl);
 const desktopToolsUrl = pathToFileURL(path.resolve("F:/openclaw/miya/src/desktop-tools.ts")).href;
 const { registerDesktopTools } = await import(desktopToolsUrl);
 const mediaToolsUrl = pathToFileURL(path.resolve("F:/openclaw/miya/src/media-tools.ts")).href;
 const { registerMediaTools } = await import(mediaToolsUrl);
 const wizardToolsUrl = pathToFileURL(path.resolve("F:/openclaw/miya/src/wizard-tools.ts")).href;
 const { registerWizardTools } = await import(wizardToolsUrl);
+const runtimeStateUrl = pathToFileURL(path.resolve("F:/openclaw/miya/src/runtime-state.ts")).href;
+const { readRuntimeState } = await import(runtimeStateUrl);
 
 function makeTempRuntime({ items, visionScript = null, voiceScript = null, imageScript = null, blockClick = false }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "miya-runtime-http-"));
@@ -193,10 +195,12 @@ function createApi(tempRoot, visionPath = null) {
     logger: {},
   };
   registerRuntimeHttp(api);
+  registerStatusTool(api);
   registerDesktopTools(api);
   registerMediaTools(api);
   registerWizardTools(api);
   return {
+    statusRoute: routes.find((entry) => entry.path === "/plugins/miya/status"),
     desktopRoute: routes.find((entry) => entry.path === "/plugins/miya/desktop"),
     workflowRoute: routes.find((entry) => entry.path === "/plugins/miya/workflow"),
     voiceRoute: routes.find((entry) => entry.path === "/plugins/miya/voice"),
@@ -419,6 +423,60 @@ test("POST /plugins/miya/desktop/run classifies human mutex as blocked-external"
   assert.equal(result.body.blockerType, "external");
 });
 
+test("POST /plugins/miya/desktop/awake persists a successful awakeProbe snapshot", async (t) => {
+  const { root } = makeTempRuntime({
+    items: [
+      { index: 1, name: "Insert", controlType: "TabItemControl", enabled: true, rect: { left: 200, top: 40, right: 280, bottom: 80 } },
+    ],
+  });
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const route = createApi(root);
+  const result = await invokeRoute(route.desktopRoute, {
+    url: "/plugins/miya/desktop/awake",
+    body: {},
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.status, "ok");
+  assert.deepEqual(result.body.completed, ["ping", "capture", "inspect_ui", "click"]);
+
+  const runtimeState = await readRuntimeState({ stateRoot: root, pluginRoot: root, modelRoot: path.join(root, "model") });
+  assert.equal(runtimeState.awakeProbe?.ok, true);
+  assert.deepEqual(runtimeState.awakeProbe?.completed, ["ping", "capture", "inspect_ui", "click"]);
+  assert.equal(runtimeState.awakeProbe?.payload?.status, "ok");
+});
+
+test("POST /plugins/miya/desktop/awake persists blocked-external failures truthfully", async (t) => {
+  const { root } = makeTempRuntime({
+    items: [
+      { index: 1, name: "Insert", controlType: "TabItemControl", enabled: true, rect: { left: 200, top: 40, right: 280, bottom: 80 } },
+    ],
+    blockClick: true,
+  });
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const route = createApi(root);
+  const result = await invokeRoute(route.desktopRoute, {
+    url: "/plugins/miya/desktop/awake",
+    body: {},
+  });
+
+  assert.equal(result.statusCode, 500);
+  assert.equal(result.body.status, "blocked-external");
+  assert.equal(result.body.failedStep, "click");
+  assert.equal(result.body.blockerType, "external");
+
+  const runtimeState = await readRuntimeState({ stateRoot: root, pluginRoot: root, modelRoot: path.join(root, "model") });
+  assert.equal(runtimeState.awakeProbe?.ok, false);
+  assert.equal(runtimeState.awakeProbe?.failedStep, "click");
+  assert.equal(runtimeState.awakeProbe?.payload?.status, "blocked-external");
+});
+
 test("desktop tools register a high-level miya_desktop_run tool", async (t) => {
   const { root } = makeTempRuntime({
     items: [
@@ -493,6 +551,110 @@ test("workflow HTTP routes can start, check, and stop queue-backed tasks", async
   assert.equal(stopResult.body.status, "ok");
   assert.equal(stopResult.body.task.status, "blocked-external");
   assert.equal(stopResult.body.task.blocker_type, "external");
+});
+
+test("status HTTP route returns dispatcher-backed continuous-work status", async (t) => {
+  const { root } = makeTempRuntime({ items: [] });
+  const queueRoot = path.join(root, "workspace");
+  fs.mkdirSync(path.join(queueRoot, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(queueRoot, "TASK_QUEUE.md"), `# Task Queue
+
+## T900 - Continue the current task
+- status: queued
+- priority: P1
+- depends_on: []
+- blocker_type:
+- acceptance:
+  - Concrete acceptance
+- verify:
+  - Concrete verify
+- artifacts:
+  - docs/runtime-check.txt
+- last_update: 2026-03-22T10:00:00+08:00
+- notes:
+  - Verified: prepared for dispatcher selection.
+- next_action: Keep moving this task.
+`, "utf8");
+  fs.writeFileSync(path.join(queueRoot, "MEMORY.md"), "# Memory\n", "utf8");
+  fs.copyFileSync("F:/openclaw/workspace/scripts/continuous-dispatcher.mjs", path.join(queueRoot, "scripts", "continuous-dispatcher.mjs"));
+  fs.mkdirSync(path.join(root, "state"), { recursive: true });
+  fs.writeFileSync(path.join(root, "state", "runtime-state.json"), JSON.stringify({
+    updatedAt: "2026-03-22T05:40:00.000Z",
+    awakeProbe: {
+      updatedAt: "2026-03-22T05:41:00.000Z",
+      ok: false,
+      failedStep: "inspect_ui",
+      completed: ["ping", "capture"],
+      error: "inspect exploded",
+      payload: { status: "error", failedStep: "inspect_ui" }
+    }
+  }, null, 2), "utf8");
+
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const api = createApi(root);
+  const result = await invokeRoute(api.statusRoute, {
+    method: "GET",
+    url: "/plugins/miya/status/get",
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.status, "ok");
+  assert.equal(result.body.decision, "RUN");
+  assert.equal(result.body.taskId, "T900");
+  assert.equal(result.body.taskStatus, "queued");
+  assert.equal(result.body.nextAction, "Keep moving this task.");
+  assert.deepEqual(result.body.latestRuntimeProbe, {
+    probe: "awakeProbe",
+    updatedAt: "2026-03-22T05:41:00.000Z",
+    ok: false,
+    error: "inspect exploded",
+    failedStep: "inspect_ui",
+    completed: ["ping", "capture"],
+    payloadStatus: "error",
+  });
+});
+
+test("status tool registers a stable dispatcher-backed status contract", async (t) => {
+  const { root } = makeTempRuntime({ items: [] });
+  const queueRoot = path.join(root, "workspace");
+  fs.mkdirSync(path.join(queueRoot, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(queueRoot, "TASK_QUEUE.md"), `# Task Queue
+
+## T901 - Report queue state
+- status: blocked-external
+- priority: P2
+- depends_on: []
+- blocker_type: external
+- acceptance:
+  - Concrete acceptance
+- verify:
+  - Concrete verify
+- artifacts:
+  - docs/runtime-check.txt
+- last_update: 2026-03-22T10:00:00+08:00
+- notes:
+  - Verified: waiting on an external blocker.
+- next_action: Wait for the external blocker to clear.
+`, "utf8");
+  fs.writeFileSync(path.join(queueRoot, "MEMORY.md"), "# Memory\n", "utf8");
+  fs.copyFileSync("F:/openclaw/workspace/scripts/continuous-dispatcher.mjs", path.join(queueRoot, "scripts", "continuous-dispatcher.mjs"));
+
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const api = createApi(root);
+  const statusTool = api.tools.find((tool) => tool.name === "miya_status_get");
+  assert.ok(statusTool);
+
+  const result = await statusTool.execute("status-get", {});
+  assert.equal(result.structuredContent.status, "ok");
+  assert.equal(result.structuredContent.decision, "NO_RUNNABLE_TASK");
+  assert.ok(result.structuredContent.blockedByType["blocked-external"]);
+  assert.equal(result.structuredContent.latestRuntimeProbe, undefined);
 });
 
 test("voice HTTP routes report truthful unavailable status when local runtime assets are incomplete", async (t) => {

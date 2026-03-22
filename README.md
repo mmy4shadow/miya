@@ -59,6 +59,9 @@ Implemented now:
   - validation doc
 - queue-backed workflow control:
   - workflow commands for start/check/stop
+  - dispatcher-backed status surface:
+    - `GET|POST /plugins/miya/status/get`
+    - `miya_status_get`
   - workflow HTTP routes:
     - `GET|POST /plugins/miya/workflow/check`
     - `POST /plugins/miya/workflow/start`
@@ -134,6 +137,16 @@ Safe health probe for the optional local worker.
 
 ### `/miya-capabilities`
 Shows mapped local assets, VRAM lane definitions, wizard placeholders, and Phase 6 acceptance checklist status.
+
+### Dispatcher-backed status
+
+Use the route/tool surface below when you need a truthful continuous-work snapshot without inventing a second scheduler:
+
+- `GET /plugins/miya/status/get`
+- `POST /plugins/miya/status/get`
+- `miya_status_get`
+
+The payload reports the workspace dispatcher's current `decision`, selected task, `nextAction`, blocked summary, the latest Miya runtime probe snapshot (`latestRuntimeProbe`), and the latest workloop/continuation wake state.
 
 ## Install for local development
 

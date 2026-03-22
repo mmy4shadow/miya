@@ -229,3 +229,40 @@ test("vram scheduler cleans up temp file when atomic rename fails", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("vram scheduler tolerates EPERM rename collisions when replacing an existing state file", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "miya-vram-"));
+  const config = makeConfig(root);
+  const stateFile = getStateFile(root);
+  const stateDir = path.dirname(stateFile);
+  const originalRenameSync = fs.renameSync;
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify({
+      updatedAt: "2026-03-22T00:00:00.000Z",
+      strategy: "manual-lanes",
+      leases: [],
+      recentEvictions: [],
+    }, null, 2), "utf8");
+
+    fs.renameSync = function (...args) {
+      const source = String(args[0] ?? "");
+      const target = String(args[1] ?? "");
+      if (source.endsWith(".tmp") && target === stateFile) {
+        throw Object.assign(new Error("rename blocked"), { code: "EPERM" });
+      }
+      return originalRenameSync.apply(this, args);
+    };
+
+    const acquired = acquireVramLane("voice", config);
+    assert.equal(acquired.ok, true);
+
+    const persisted = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    assert.equal(persisted.leases.length, 1);
+    assert.equal(persisted.leases[0].id, acquired.lease.id);
+    assert.deepEqual(fs.readdirSync(stateDir), ["vram-scheduler.json"]);
+  } finally {
+    fs.renameSync = originalRenameSync;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

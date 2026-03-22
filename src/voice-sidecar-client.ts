@@ -6,7 +6,20 @@ import { resolveMiyaPaths } from "./paths.ts";
 import { runJsonSidecar } from "./sidecar-client.ts";
 import { acquireVramLane, releaseVramLane } from "./vram-scheduler.ts";
 
-type VoiceAction = "transcribe" | "synthesize" | "speaker_identify";
+type VoiceAction = "transcribe" | "vad" | "synthesize" | "speaker_identify";
+
+function estimateVoiceActionVramMb(action: VoiceAction) {
+  switch (action) {
+    case "vad":
+      return 512;
+    case "speaker_identify":
+      return 1536;
+    case "transcribe":
+      return 3072;
+    case "synthesize":
+      return 4096;
+  }
+}
 
 function stageExists(modelPath: string) {
   return Boolean(modelPath) && fs.existsSync(modelPath);
@@ -51,7 +64,7 @@ export async function runVoiceAction(
     },
   };
 
-  const leaseResult = acquireVramLane("voice", config);
+  const leaseResult = acquireVramLane("voice", config, { estimatedVramMb: estimateVoiceActionVramMb(action) });
   if (!leaseResult.ok) {
     return {
       status: "unavailable",
@@ -65,6 +78,7 @@ export async function runVoiceAction(
 
   const paths = resolveMiyaPaths(config);
   const sidecarPath = path.join(paths.pluginRoot, "worker", "voice_sidecar.py");
+  const artifactRoot = path.join(paths.pluginRoot, "state", "voice");
 
   try {
     if (!voice.enabled) {
@@ -82,8 +96,18 @@ export async function runVoiceAction(
       const payload = await runJsonSidecar(
         config?.desktopWorker?.probe?.command?.trim() || "python",
         [sidecarPath],
-        { action, input, voice, assets },
-        30000,
+        {
+          action,
+          input,
+          voice,
+          assets,
+          paths: {
+            pluginRoot: paths.pluginRoot,
+            stateRoot: paths.stateRoot,
+            artifactRoot,
+          },
+        },
+        90000,
       );
       return {
         ...payload,
@@ -100,6 +124,6 @@ export async function runVoiceAction(
       admission: leaseResult,
     };
   } finally {
-    releaseVramLane(leaseResult.lease?.id, "voice");
+    releaseVramLane(leaseResult.lease?.id, "voice", config);
   }
 }

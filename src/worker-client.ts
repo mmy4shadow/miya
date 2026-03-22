@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { resolveDesktopWorkerConfig, type MiyaPluginConfig } from "./config.ts";
+import { resolveMiyaPaths } from "./paths.ts";
 
 export type WorkerProbeTarget = {
   transport: "http" | "command";
@@ -25,14 +26,19 @@ export type WorkerHealthStatus = {
 
 export function createWorkerProbeTarget(config?: MiyaPluginConfig): WorkerProbeTarget {
   const worker = resolveDesktopWorkerConfig(config);
+  const paths = resolveMiyaPaths(config);
+  const command = worker.probe.command?.trim() || "python";
+  const args = worker.probe.args?.length
+    ? worker.probe.args
+    : [paths.pluginRoot ? `${paths.pluginRoot}\\worker\\ping_worker.py` : "worker\\ping_worker.py", "ping"];
   return {
     transport: worker.transport,
     endpoint: worker.endpoint,
     mode: worker.probe.mode,
     path: worker.probe.path,
     method: worker.probe.method,
-    command: worker.probe.command,
-    args: worker.probe.args,
+    command,
+    args,
     timeoutMs: worker.timeoutMs,
     expectedStatus: worker.probe.expectedStatus,
   };
@@ -116,6 +122,7 @@ async function probeCommandHealth(target: WorkerProbeTarget, observedAt: string)
   }
 
   const started = Date.now();
+  const commandTarget = `${target.command} ${target.args.join(" ")}`.trim();
 
   return new Promise((resolve) => {
     const child = spawn(target.command, target.args, {
@@ -124,12 +131,22 @@ async function probeCommandHealth(target: WorkerProbeTarget, observedAt: string)
 
     let stderr = "";
     let stdout = "";
+    let settled = false;
+    const finish = (result: WorkerHealthStatus) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
     const timer = setTimeout(() => {
       child.kill();
-      resolve({
+      finish({
         ok: false,
         state: "error",
-        target: `${target.command} ${target.args.join(" ")}`.trim(),
+        target: commandTarget,
         detail: `command probe timed out after ${target.timeoutMs}ms`,
         elapsedMs: Date.now() - started,
         observedAt,
@@ -144,11 +161,10 @@ async function probeCommandHealth(target: WorkerProbeTarget, observedAt: string)
     });
 
     child.on("exit", (code) => {
-      clearTimeout(timer);
-      resolve({
+      finish({
         ok: code === 0,
         state: code === 0 ? "healthy" : "unhealthy",
-        target: `${target.command} ${target.args.join(" ")}`.trim(),
+        target: commandTarget,
         detail: [stdout.trim(), stderr.trim(), `exit=${code}`].filter(Boolean).join(" | "),
         elapsedMs: Date.now() - started,
         observedAt,
@@ -156,11 +172,10 @@ async function probeCommandHealth(target: WorkerProbeTarget, observedAt: string)
     });
 
     child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve({
+      finish({
         ok: false,
         state: "error",
-        target: `${target.command} ${target.args.join(" ")}`.trim(),
+        target: commandTarget,
         detail: error.message,
         elapsedMs: Date.now() - started,
         observedAt,

@@ -1,6 +1,6 @@
 param(
   [ValidateSet("cpu", "vulkan")]
-  [string]$Flavor = "cpu",
+  [string]$Flavor = "vulkan",
   [ValidateSet("Q8_0", "F16")]
   [string]$MmprojVariant = "Q8_0",
   [switch]$SkipRuntime,
@@ -55,15 +55,52 @@ function Download-File {
   Invoke-WebRequest -Uri $Url -OutFile $Destination
 }
 
+function Get-FlavorMarkerPath {
+  param([string]$RuntimeRoot)
+  return (Join-Path $RuntimeRoot "miya-runtime-flavor.txt")
+}
+
+function Test-RuntimeFlavor {
+  param(
+    [string]$RuntimeRoot,
+    [string]$SelectedFlavor
+  )
+
+  $server = Join-Path $RuntimeRoot "llama-server.exe"
+  if (-not (Test-Path $server)) {
+    return $false
+  }
+
+  $expectedProbe = if ($SelectedFlavor -eq "vulkan") {
+    Join-Path $RuntimeRoot "ggml-vulkan.dll"
+  } else {
+    Join-Path $RuntimeRoot "ggml-cpu-x64.dll"
+  }
+
+  if (-not (Test-Path $expectedProbe)) {
+    return $false
+  }
+
+  $marker = Get-FlavorMarkerPath -RuntimeRoot $RuntimeRoot
+  if (-not (Test-Path $marker)) {
+    return $false
+  }
+
+  $current = (Get-Content -Path $marker -Raw).Trim()
+  return $current -eq $SelectedFlavor
+}
+
 if (-not $SkipRuntime) {
   $asset = Get-LlamaAssetUrl -SelectedFlavor $Flavor
   $zipPath = Join-Path $tmpRoot $asset.Name
   Download-File -Url $asset.Url -Destination $zipPath
   $runtimeBinary = Join-Path $runtimeRoot "llama-server.exe"
-  if (Test-Path $runtimeBinary) {
-    Write-Host "[miya-vision-setup] runtime already present at $runtimeBinary"
+  $flavorReady = Test-RuntimeFlavor -RuntimeRoot $runtimeRoot -SelectedFlavor $Flavor
+  if ($flavorReady) {
+    Write-Host "[miya-vision-setup] runtime already present for flavor=$Flavor at $runtimeBinary"
   } else {
     Expand-Archive -Path $zipPath -DestinationPath $runtimeRoot -Force
+    Set-Content -Path (Get-FlavorMarkerPath -RuntimeRoot $runtimeRoot) -Value $Flavor -Encoding ascii
     Write-Host "[miya-vision-setup] runtime ready under $runtimeRoot from $($asset.Tag)"
   }
 }

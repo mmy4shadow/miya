@@ -1,7 +1,7 @@
 import { resolveFeatureFlags, type MiyaPluginConfig } from "./config.ts";
 import { collectDiagnostics } from "./diagnostics.ts";
 import { registerDesktopTools } from "./desktop-tools.ts";
-import { registerPromptProbe, registerPingTool, registerRuntimeHttp } from "./miya-runtime.ts";
+import { registerPromptProbe, registerPingTool, registerRuntimeHttp, registerStatusTool } from "./miya-runtime.ts";
 import {
   registerMiyaAwakeCommand,
   registerMiyaCapabilitiesCommand,
@@ -14,6 +14,7 @@ import { registerWorkflowHooks } from "./workloop.ts";
 import { buildWorkflowContractSnapshot } from "./workflow-contract.ts";
 import { registerWorkflowTools } from "./workflow-tools.ts";
 import { registerMediaTools } from "./media-tools.ts";
+import { registerWizardTools } from "./wizard-tools.ts";
 
 export default function register(api: any) {
   const pluginConfig = (api?.pluginConfig ?? api?.config?.plugins?.entries?.miya?.config ?? {}) as MiyaPluginConfig;
@@ -21,9 +22,11 @@ export default function register(api: any) {
 
   registerPromptProbe(api);
   registerPingTool(api);
+  registerStatusTool(api);
   registerDesktopTools(api);
   registerMediaTools(api);
   registerWorkflowTools(api);
+  registerWizardTools(api);
   registerRuntimeHttp(api);
   registerWorkflowHooks(api);
 

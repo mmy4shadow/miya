@@ -14,7 +14,8 @@ export type WorkerActionName =
   | "dispatcher"
   | "workflow_hook"
   | "continuation_wake"
-  | "desktop_run";
+  | "desktop_run"
+  | "wizard";
 
 export type WorkerEvidenceRecord = {
   time: string;

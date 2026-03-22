@@ -4,6 +4,7 @@ import process from "node:process";
 import childProcess from "node:child_process";
 import { resolveVramSchedulerConfig, type MiyaPluginConfig } from "./config.ts";
 import { resolveMiyaPaths } from "./paths.ts";
+import { replaceFileAtomicSync } from "./atomic-file.ts";
 
 export type ModelLaneDefinition = {
   lane: "interactive" | "voice" | "vision" | "image" | "training";
@@ -178,7 +179,7 @@ function writePersistedState(state: PersistedSchedulerState, config?: MiyaPlugin
   fs.mkdirSync(stateDir, { recursive: true });
   try {
     fs.writeFileSync(tempFile, JSON.stringify(state, null, 2), "utf8");
-    fs.renameSync(tempFile, stateFile);
+    replaceFileAtomicSync(tempFile, stateFile);
   } catch (error) {
     try {
       fs.rmSync(tempFile, { force: true });

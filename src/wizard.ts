@@ -3,9 +3,10 @@ import path from "node:path";
 import childProcess from "node:child_process";
 import { resolveWizardConfig, type MiyaPluginConfig } from "./config.ts";
 import { resolveMiyaPaths } from "./paths.ts";
-import { acquireVramLane, releaseOwnedVramLeases } from "./vram-scheduler.ts";
+import { acquireVramLane, releaseOwnedVramLeases, releaseVramLane } from "./vram-scheduler.ts";
 import { validateTrainingDataset, type DatasetValidationResult } from "./dataset-validation.ts";
 import { resolveTrainerAdapterSpec, type TrainerAdapterSpec } from "./trainer-adapters.ts";
+import { replaceFileAtomic } from "./atomic-file.ts";
 
 export type WizardStage = "idle" | "collecting" | "preparing" | "queued" | "running" | "complete" | "failed";
 export type WizardJobKind = "persona-dataset" | "voice-adapter" | "vision-adapter" | "lora-finetune" | "full-finetune";
@@ -50,6 +51,21 @@ export type WizardStatus = {
   notes: string[];
 };
 
+async function writeJsonAtomic(filePath: string, value: unknown) {
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempPath, JSON.stringify(value, null, 2), "utf8");
+  try {
+    await replaceFileAtomic(tempPath, filePath);
+  } catch (error) {
+    try {
+      await fs.rm(tempPath, { force: true });
+    } catch {
+      // Best effort temp cleanup only; preserve original failure.
+    }
+    throw error;
+  }
+}
+
 export async function getWizardStatus(config?: MiyaPluginConfig): Promise<WizardStatus> {
   const resolved = resolveWizardConfig(config);
   await ensureWizardScaffold(resolved.workspaceDir, resolved.datasetDir, resolved.outputDir);
@@ -89,7 +105,7 @@ export async function createWizardJob(
   };
 
   const persisted = getWizardJobPath(resolved.outputDir, job.id);
-  await fs.writeFile(persisted, JSON.stringify(job, null, 2), "utf8");
+  await writeJsonAtomic(persisted, job);
   return { status: "ok", job, persisted };
 }
 
@@ -115,7 +131,7 @@ export async function updateWizardJob(
     notes: patch.notes === undefined ? existing.notes : normalizeNotes(patch.notes),
   };
   const persisted = getWizardJobPath(resolved.outputDir, id);
-  await fs.writeFile(persisted, JSON.stringify(job, null, 2), "utf8");
+  await writeJsonAtomic(persisted, job);
   return { status: "ok", job, persisted };
 }
 
@@ -234,7 +250,7 @@ export async function runWizardJob(
     startedAt: new Date().toISOString(),
     notes: normalizeNotes([...(preparedJob.notes ?? []), "runner_spawned"]),
   };
-  await fs.writeFile(persisted, JSON.stringify(updated, null, 2), "utf8");
+  await writeJsonAtomic(persisted, updated);
   return { status: "ok", job: updated, persisted };
 }
 
@@ -339,6 +355,16 @@ function normalizeEnv(env?: Record<string, string>) {
 }
 
 function reconcileWizardJob(job: TrainingJobDescriptor, config?: MiyaPluginConfig): TrainingJobDescriptor {
+  const terminalWithLease = Boolean(job.vramLeaseId && (job.status === "complete" || job.status === "failed"));
+  if (terminalWithLease) {
+    releaseVramLane(job.vramLeaseId, "training", config);
+    return {
+      ...job,
+      vramLeaseId: undefined,
+      notes: normalizeNotes([...(job.notes ?? []), "vram_lease_released"]),
+    };
+  }
+
   const shouldReleaseLease = Boolean(job.vramLeaseId && job.pid && !processIsAlive(job.pid));
   if (shouldReleaseLease) {
     releaseOwnedVramLeases(job.pid, config);

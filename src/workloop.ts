@@ -7,7 +7,7 @@ import { resolveMiyaPaths } from "./paths.ts";
 import { readRuntimeState, updateRuntimeState } from "./runtime-state.ts";
 import type { OrchestrationGovernorState } from "./runtime-state.ts";
 
-type DispatcherPayload = {
+export type DispatcherPayload = {
   decision?: string;
   taskId?: string;
   taskStatus?: string;
@@ -101,6 +101,78 @@ async function runDispatcher(config?: MiyaPluginConfig): Promise<DispatcherPaylo
       }
     });
   });
+}
+
+function summarizeLatestRuntimeProbe(runtimeState: Awaited<ReturnType<typeof readRuntimeState>>) {
+  const probes = [
+    ["awakeProbe", runtimeState.awakeProbe],
+    ["desktopRunProbe", runtimeState.desktopRunProbe],
+    ["desktopClickProbe", runtimeState.desktopClickProbe],
+    ["desktopInspectProbe", runtimeState.desktopInspectProbe],
+    ["desktopCaptureProbe", runtimeState.desktopCaptureProbe],
+    ["voiceProbe", runtimeState.voiceProbe],
+    ["imageProbe", runtimeState.imageProbe],
+    ["wizardProbe", runtimeState.wizardProbe],
+    ["pingProbe", runtimeState.pingProbe],
+    ["workerHealthProbe", runtimeState.workerHealthProbe],
+    ["diagnosticsProbe", runtimeState.diagnosticsProbe],
+    ["dispatcherProbe", runtimeState.dispatcherProbe],
+  ].filter((entry): entry is [string, { updatedAt?: string; ok?: boolean; error?: string; payload?: Record<string, unknown>; [key: string]: unknown }] => Boolean(entry[1]?.updatedAt));
+
+  if (!probes.length) {
+    return undefined;
+  }
+
+  probes.sort((left, right) => {
+    const leftAt = Date.parse(left[1].updatedAt ?? "") || 0;
+    const rightAt = Date.parse(right[1].updatedAt ?? "") || 0;
+    return rightAt - leftAt;
+  });
+
+  const [probeName, probe] = probes[0];
+  return {
+    probe: probeName,
+    updatedAt: probe.updatedAt,
+    ok: probe.ok,
+    error: typeof probe.error === "string" ? probe.error : undefined,
+    action: typeof probe.action === "string" ? probe.action : undefined,
+    taskId: typeof probe.taskId === "string" ? probe.taskId : undefined,
+    runId: typeof probe.runId === "string" ? probe.runId : undefined,
+    failedStep: typeof probe.failedStep === "string" ? probe.failedStep : undefined,
+    artifactPath: typeof probe.artifactPath === "string" ? probe.artifactPath : undefined,
+    code: typeof probe.code === "string" ? probe.code : undefined,
+    completed: Array.isArray(probe.completed) ? probe.completed : undefined,
+    payloadStatus: typeof probe.payload?.status === "string" ? probe.payload.status : undefined,
+  };
+}
+
+export async function getContinuousWorkStatus(config?: MiyaPluginConfig) {
+  try {
+    const payload = await runDispatcher(config);
+    const runtimeState = await readRuntimeState(config);
+    return {
+      status: "ok" as const,
+      decision: payload.decision,
+      taskId: payload.taskId,
+      taskStatus: payload.taskStatus,
+      nextAction: payload.nextAction,
+      summary: payload.summary,
+      reason: payload.reason,
+      blockedByType: payload.blockedByType ?? {},
+      appliedRepairs: Array.isArray(payload.appliedRepairs) ? payload.appliedRepairs : [],
+      dispatcher: payload,
+      latestRuntimeProbe: summarizeLatestRuntimeProbe(runtimeState),
+      workloopHook: runtimeState.workloopHook,
+      continuationWake: runtimeState.continuationWake,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: "error" as const,
+      code: "dispatcher_failed",
+      reason: message,
+    };
+  }
 }
 
 function buildWorkloopSystemContext(decision: DispatcherPayload) {
