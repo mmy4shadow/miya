@@ -8,7 +8,7 @@ export type MemoryLiteStatus = {
   collection: string;
   maxRecallItems: number;
   fallbackStrategy: "identity-only" | "core-only";
-  runtimeMode: "pass-through" | "placeholder" | "sidecar-index";
+  runtimeMode: "pass-through" | "placeholder" | "sidecar-index" | "local-recall";
   notes: string[];
   cacheFile: string;
   cacheReady: boolean;
@@ -20,13 +20,13 @@ export async function getMemoryLiteStatus(config?: MiyaPluginConfig): Promise<Me
   const cacheReady = await ensureMemoryLiteCache(cacheFile, resolved.collection);
   return {
     ...resolved,
-    runtimeMode: resolved.provider === "core-memory" ? "pass-through" : "sidecar-index",
+    runtimeMode: resolved.provider === "local-embedding" ? "local-recall" : resolved.provider === "core-memory" ? "pass-through" : "sidecar-index",
     cacheFile,
     cacheReady,
     notes: [
       "Memory-lite does not replace OpenClaw core memory.",
       resolved.provider === "local-embedding"
-        ? "Local embedding assets are documented; current runtime keeps a sidecar cache scaffold ready for future recall wiring."
+        ? "Local embedding assets now back Miya-side recall from the local memory-lite index."
         : "Current runtime reuses core memory while maintaining a local sidecar cache scaffold for Miya-specific recall metadata.",
     ],
   };

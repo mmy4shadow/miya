@@ -7,7 +7,7 @@ export type PersonaLiteStatus = {
   referenceImageDir: string;
   injectionMode: "static" | "core-system" | "none";
   fallbackStrategy: "static-summary" | "identity-only";
-  runtimeMode: "static-only" | "placeholder";
+  runtimeMode: "static-only" | "placeholder" | "dynamic-before-prompt-build";
   notes: string[];
 };
 
@@ -15,9 +15,9 @@ export function getPersonaLiteStatus(config?: MiyaPluginConfig): PersonaLiteStat
   const resolved = resolvePersonaLiteConfig(config);
   return {
     ...resolved,
-    runtimeMode: resolved.injectionMode === "static" ? "static-only" : "placeholder",
+    runtimeMode: resolved.injectionMode === "none" ? "placeholder" : "dynamic-before-prompt-build",
     notes: [
-      "Persona-lite currently documents tone and assets rather than mutating unsupported runtime prompts.",
+      "Persona-lite now injects a structured persona block during before_prompt_build.",
       "If dynamic injection is unavailable, fallback is a static profile summary plus reference image directory.",
     ],
   };

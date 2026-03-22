@@ -7,6 +7,7 @@ import { getVoiceStatus } from "./voice.ts";
 import { getVramSchedulerStatus } from "./vram-scheduler.ts";
 import { probeWorkerHealth } from "./worker-client.ts";
 import { getWizardStatus } from "./wizard.ts";
+import { readRuntimeState } from "./runtime-state.ts";
 
 export type MiyaDiagnostics = {
   plugin: string;
@@ -26,7 +27,7 @@ export type MiyaDiagnostics = {
 
 export async function collectDiagnostics(config?: MiyaPluginConfig): Promise<MiyaDiagnostics> {
   const paths = resolveMiyaPaths(config);
-  const [worker, modelBuckets, modelAssets, voice, memoryLite, wizard, recentEvidence] = await Promise.all([
+  const [worker, modelBuckets, modelAssets, voice, memoryLite, wizard, recentEvidence, runtimeState] = await Promise.all([
     probeWorkerHealth(config),
     getModelBuckets(paths.modelRoot),
     getModelAssetMap(paths.modelRoot),
@@ -34,7 +35,14 @@ export async function collectDiagnostics(config?: MiyaPluginConfig): Promise<Miy
     getMemoryLiteStatus(config),
     getWizardStatus(config),
     readEvidenceTail(12, config),
+    readRuntimeState(config),
   ]);
+  const runtimeValidated = Boolean(
+    runtimeState?.voiceProbe?.ok
+    || runtimeState?.imageProbe?.ok
+    || runtimeState?.desktopRunProbe?.ok
+    || runtimeState?.awakeProbe?.ok,
+  );
 
   return {
     plugin: "miya",
@@ -51,12 +59,13 @@ export async function collectDiagnostics(config?: MiyaPluginConfig): Promise<Miy
     acceptanceChecklist: [
       { item: "Phase 1 worker config + client exists", status: "done" },
       { item: "Worker health probe reaches real runtime", status: worker.state === "healthy" ? "done" : "todo", note: worker.detail },
-      { item: "Memory-lite fallback documented", status: "done" },
-      { item: "Persona-lite fallback documented", status: "done" },
+      { item: "Memory-lite recall runtime available", status: memoryLite.enabled && memoryLite.cacheReady ? "done" : "todo" },
+      { item: "Persona-lite prompt injection available", status: getPersonaLiteStatus(config).enabled ? "done" : "todo" },
       { item: "Voice assets mapped to local directories", status: modelAssets.some((asset) => asset.key === "voice.tts" && asset.exists) ? "done" : "todo" },
       { item: "VRAM scheduler lanes defined", status: "done" },
       { item: "Wizard/training descriptors defined", status: "done" },
-      { item: "External runtime validation batch completed", status: "todo", note: "Needs manual worker/model runtime verification." },
+      { item: "Wizard runner can execute local staged jobs", status: "done" },
+      { item: "External runtime validation batch completed", status: runtimeValidated ? "done" : "todo", note: runtimeValidated ? "Recent runtime-state contains successful live probe evidence." : "Needs manual worker/model runtime verification." },
     ],
     evidence: [
       ...recentEvidence,

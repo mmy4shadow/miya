@@ -1,8 +1,8 @@
 # Miya OpenClaw Plugin Scaffold
 
-Minimal local OpenClaw plugin scaffold for Miya, now extended with honest Phase 1-6 foundations.
+Minimal local OpenClaw plugin scaffold for Miya, now extended with honest Phase 1-6 foundations and real local runtime paths for voice/image/vision.
 
-This repo is still intentionally small. The goal is not to rebuild OpenClaw core, but to define Miya-owned boundaries that can grow into real closed loops once external runtimes are attached.
+This repo is still intentionally small. The goal is not to rebuild OpenClaw core, but to define Miya-owned boundaries that can grow into real closed loops on the active machine first, then grow further only where the runtime evidence says it is justified.
 
 ## Current scope
 
@@ -25,16 +25,33 @@ Implemented now:
     - `type_text`
     - `press_key`
   - evidence record shape
-- Phase 2 placeholders:
+- Phase 2 runtime:
   - `memory-lite` config + status helper
-  - `persona-lite` config + static fallback strategy
-- Phase 3 placeholders:
+  - local `memory-lite` recall from `state/memory-lite/index.json`
+  - `persona-lite` config + dynamic before-prompt injection
+  - single-stage prompt assembly: `runtime guard + persona + recall`
+- Phase 3 runtime path:
   - voice stage config for VAD / ASR / TTS / speaker-id
   - model asset mapping to local folders
-- Phase 4 placeholders:
+  - sidecar-backed neural VAD execution with JSON artifacts, preferring Silero on CUDA
+  - sidecar-backed ASR execution through `faster-whisper`
+  - sidecar-backed embedding speaker matching through local `ERes2Net`
+  - sidecar-backed Qwen3-TTS synthesis through local `qwen_tts` weights
+- Phase 4 scheduler foundations:
   - declarative VRAM scheduler lanes and priorities
-- Phase 5 placeholders:
+  - persisted lane leases with dead-process pruning
+  - live GPU free-memory telemetry through `nvidia-smi`
+  - action-level voice admission estimates so VAD/speaker/ASR/TTS do not share one coarse VRAM budget
+  - optional lower-priority lane force-eviction with persisted eviction records
+  - optional external defrag hook when fragmentation risk is detected
+- Phase 5 local training ledger:
   - wizard state and local training job descriptors
+  - wizard HTTP/tool CRUD for staged jobs
+  - wizard runner for real local dataset-prep / command execution
+  - persona-dataset prep bypasses training-GPU admission when no trainer command is needed
+  - external LoRA / finetune trainer binding through `wizard.trainer` or per-job overrides
+  - artifact manifest capture for external trainer outputs
+  - training lease release after runner exit
 - Phase 6 diagnostics:
   - consolidated diagnostics collector
   - runtime evidence persisted to `state/evidence.jsonl`
@@ -55,13 +72,8 @@ Implemented now:
 - local model path inventory in `docs/MODELS.md`
 - roadmap in `docs/ROADMAP.md`
 
-Not implemented yet:
-- live memory-lite recall logic
-- runtime persona injection beyond static/fallback docs
-- real voice execution
-- real image generation execution
-- real VRAM arbitration/admission
-- real training jobs
+Still not implemented:
+- richer neural VAD tuning and threshold management
 - Canvas integration
 
 ## Design stance
@@ -171,10 +183,10 @@ npm run voice:setup
 npm run image:setup
 ```
 
-`voice:setup` prepares the Python package stack plus a local Qwen3-TTS download target.
-`image:setup` prepares the Python diffusion stack and verifies the local FLUX model trees.
+`voice:setup` prepares the Python package stack, restores CUDA PyTorch, warms a local `faster-whisper` cache, installs `qwen-tts`, installs the ModelScope speaker-verification dependencies used by local `ERes2Net`, installs `silero-vad`, and verifies the local Qwen3-TTS model tree under `model/audio/qwen3_tts_12hz_1_7b_customvoice`.
+`image:setup` restores CUDA PyTorch, prepares the Python diffusion stack, and verifies the local FLUX model trees used by the image sidecar.
 
-That script downloads an official `llama.cpp` Windows runtime plus the missing Qwen3-VL `mmproj` file into the Miya project tree. Until those assets exist, `worker/vision_sidecar.py` truthfully reports `vision_unavailable` instead of pretending local visual reasoning is online.
+`vision:setup` now defaults to the Vulkan Windows runtime, writes a flavor marker, and refreshes stale CPU-only bundles when the requested GPU flavor is missing. Once those assets exist, `worker/vision_sidecar.py` can boot local `llama-server` with `gpuLayers=99` and return structured click decisions.
 
 ## Example config sketch
 
@@ -196,6 +208,7 @@ That script downloads an official `llama.cpp` Windows runtime plus the missing Q
             "provider": "auto",
             "runtimeRoot": "F:\\openclaw\\miya\\runtime\\vision\\llama.cpp",
             "modelPath": "F:\\openclaw\\miya\\model\\vision\\qwen3vl_4b_instruct_q4_k_m",
+            "gpuLayers": 99,
             "timeoutMs": 60000
           },
           "memoryLite": {
@@ -207,16 +220,45 @@ That script downloads an official `llama.cpp` Windows runtime plus the missing Q
             "injectionMode": "static"
           },
           "voice": {
+            "enabled": true,
             "tts": {
               "enabled": true,
-              "provider": "external-worker"
+              "provider": "manual",
+              "modelPath": "F:\\openclaw\\miya\\model\\audio\\qwen3_tts_12hz_1_7b_customvoice",
+              "voiceId": "Vivian"
+            },
+            "speakerId": {
+              "enabled": true,
+              "provider": "manual",
+              "modelPath": "F:\\openclaw\\miya\\model\\speaker_id\\eres2net"
+            },
+            "asr": {
+              "enabled": true,
+              "provider": "manual",
+              "modelPath": "F:\\openclaw\\miya\\model\\audio\\faster_whisper_small"
             }
           },
+          "image": {
+            "enabled": true,
+            "provider": "sidecar",
+            "sidecarPath": "F:\\openclaw\\miya\\worker\\image_sidecar.py",
+            "modelPreference": "balanced",
+            "timeoutMs": 180000
+          },
           "vramScheduler": {
-            "enabled": true
+            "enabled": true,
+            "allowForceEvict": true,
+            "fragmentationSlackMb": 512
           },
           "wizard": {
-            "enabled": true
+            "enabled": true,
+            "trainer": {
+              "lora": {
+                "enabled": true,
+                "command": "python",
+                "args": ["train_lora.py", "--dataset", "{datasetPath}", "--output", "{outputPath}"]
+              }
+            }
           }
         }
       }
@@ -240,24 +282,37 @@ What is real today:
 - structured desktop actions with truthful worker execution
 - queue-backed continuous-work control surfaces
 - project-contained vision sidecar launcher and runtime bootstrap script
+- real local vision sidecar execution through `llama-server` + Qwen3-VL GGUF assets
 - project-contained voice/image sidecar boundaries
 - diagnostics aggregation
 - command surfaces for inspection
 - tool surfaces for desktop run and workflow control
-- tool surfaces for voice/image contracts
+- tool and HTTP surfaces for voice/image contracts
+- truthful artifact-or-blocker behavior for voice/image sidecars
+- real local neural VAD artifacts
+- real local ASR transcript artifacts
+- real local embedding speaker-match artifacts
+- real local Qwen3-TTS waveform artifacts
+- real local FLUX image artifacts
+- staged wizard job persistence through HTTP/tools
+- real local wizard runner execution for persona dataset prep
+- scheduler telemetry through live GPU free-memory inspection
+- route-level runtime-state and evidence persistence for voice/image, not only tool calls
 - local scaffold validation via `npm run check`
+- configurable VRAM force-eviction for lower-priority lanes with persisted eviction history
+- configurable fragmentation diagnosis + optional defrag hook
+- external LoRA / finetune trainer execution through wizard jobs
+- trainer artifact manifest generation and automatic training-lease cleanup
 
-What still needs an external runtime or next batch:
-- a live `llama-server` runtime plus local `mmproj` to make vision truly available
-- a real voice executor behind `worker/voice_sidecar.py`
-- a real image executor behind `worker/image_sidecar.py`
-- persistence for wizard jobs
+What still needs the next batch:
 - actual memory/persona/voice behavior on top of OpenClaw runtime hooks
+- richer trainer adapters beyond command-template execution
 
 ## Recommended next validation batch
 
-1. Attach a tiny local worker exposing `/health`
-2. Verify `/miya-worker-health` against a live loopback endpoint
-3. Add one read-only worker action such as `capture` metadata only
-4. Persist evidence records to a plugin-local diagnostics file
-5. Decide whether memory-lite should remain core-only or use the local embedding asset via a separate runtime
+1. Run `python ./scripts/verify_all.py`
+2. Optionally run `python ./scripts/verify_all.py --with-acceptance` on an idle desktop
+3. Validate one real `POST /plugins/miya/voice/synthesize` request and confirm the WAV artifact path is created
+4. Validate one real `POST /plugins/miya/image/generate` request and confirm the PNG artifact path is created
+5. Validate one real desktop run against a live app and confirm evidence/run output stays stable
+6. Decide whether the next milestone is richer trainer adapters, stronger memory writeback, or richer VAD controls

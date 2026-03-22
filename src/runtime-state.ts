@@ -3,6 +3,8 @@ import path from "node:path";
 import { resolveMiyaPaths, DEFAULT_PLUGIN_ROOT } from "./paths.ts";
 import type { MiyaPluginConfig } from "./config.ts";
 
+const EMPTY_RUNTIME_STATE_UPDATED_AT = new Date(0).toISOString();
+
 export type OrchestrationGovernorState = {
   updatedAt?: string;
   recentWakeByKey?: Record<string, number>;
@@ -23,6 +25,8 @@ export type MiyaRuntimeState = {
     marker: string;
     promptPreview: string;
     systemPreview: string;
+    charCount?: number;
+    truncated?: boolean;
     provider?: string;
     model?: string;
     runId?: string;
@@ -83,6 +87,32 @@ export type MiyaRuntimeState = {
     payload?: Record<string, unknown>;
     error?: string;
   };
+  voiceProbe?: {
+    updatedAt: string;
+    ok: boolean;
+    action: string;
+    code?: string;
+    artifactPath?: string;
+    payload?: Record<string, unknown>;
+    error?: string;
+  };
+  imageProbe?: {
+    updatedAt: string;
+    ok: boolean;
+    code?: string;
+    artifactPath?: string;
+    payload?: Record<string, unknown>;
+    error?: string;
+  };
+  wizardProbe?: {
+    updatedAt: string;
+    ok: boolean;
+    action: string;
+    jobId?: string;
+    artifactPath?: string;
+    payload?: Record<string, unknown>;
+    error?: string;
+  };
   dispatcherProbe?: {
     updatedAt: string;
     ok: boolean;
@@ -124,13 +154,39 @@ function getStateFile(config?: MiyaPluginConfig) {
   return path.join(paths.pluginRoot || DEFAULT_PLUGIN_ROOT, "state", "runtime-state.json");
 }
 
+function makeEmptyRuntimeState(): MiyaRuntimeState {
+  return { updatedAt: EMPTY_RUNTIME_STATE_UPDATED_AT };
+}
+
+function makeCorruptStateFile(stateFile: string) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const stateDir = path.dirname(stateFile);
+  return path.join(stateDir, `runtime-state.corrupt-${stamp}.json`);
+}
+
 export async function readRuntimeState(config?: MiyaPluginConfig): Promise<MiyaRuntimeState> {
   const stateFile = getStateFile(config);
+  let raw: string;
   try {
-    const raw = await fs.readFile(stateFile, "utf8");
+    raw = await fs.readFile(stateFile, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+      return makeEmptyRuntimeState();
+    }
+    throw error;
+  }
+
+  try {
     return JSON.parse(raw) as MiyaRuntimeState;
   } catch {
-    return { updatedAt: new Date(0).toISOString() };
+    try {
+      const corruptFile = makeCorruptStateFile(stateFile);
+      await fs.mkdir(path.dirname(stateFile), { recursive: true });
+      await fs.rename(stateFile, corruptFile);
+    } catch {
+      // Best effort quarantine only; the caller still gets a safe empty state.
+    }
+    return makeEmptyRuntimeState();
   }
 }
 
@@ -145,7 +201,19 @@ export async function updateRuntimeState(
     ...patch,
     updatedAt: new Date().toISOString(),
   };
-  await fs.mkdir(path.dirname(stateFile), { recursive: true });
-  await fs.writeFile(stateFile, JSON.stringify(next, null, 2), "utf8");
-  return next;
+  const stateDir = path.dirname(stateFile);
+  const tempFile = path.join(stateDir, `runtime-state.${process.pid}.${Date.now()}.tmp`);
+  await fs.mkdir(stateDir, { recursive: true });
+  try {
+    await fs.writeFile(tempFile, JSON.stringify(next, null, 2), "utf8");
+    await fs.rename(tempFile, stateFile);
+    return next;
+  } catch (error) {
+    try {
+      await fs.rm(tempFile, { force: true });
+    } catch {
+      // Best effort temp cleanup only; preserve original failure.
+    }
+    throw error;
+  }
 }

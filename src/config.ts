@@ -69,13 +69,34 @@ export type MiyaVramLane = {
   lane: "interactive" | "voice" | "vision" | "image" | "training";
   priority?: number;
   maxModels?: number;
+  estimatedVramMb?: number;
+  evictable?: boolean;
 };
 
 export type MiyaVramSchedulerConfig = {
   enabled?: boolean;
   strategy?: "manual-lanes" | "none";
   defaultLane?: MiyaVramLane["lane"];
+  gpuIndex?: number;
+  minFreeMb?: number;
+  telemetryCommand?: string;
+  telemetryArgs?: string[];
   lanes?: MiyaVramLane[];
+  allowForceEvict?: boolean;
+  fragmentationSlackMb?: number;
+  evictionCommand?: string;
+  evictionArgs?: string[];
+  defragCommand?: string;
+  defragArgs?: string[];
+};
+
+export type MiyaTrainerProfileConfig = {
+  enabled?: boolean;
+  command?: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  artifactGlobs?: string[];
 };
 
 export type MiyaVisionRuntimeConfig = {
@@ -89,6 +110,7 @@ export type MiyaVisionRuntimeConfig = {
   runtimeRoot?: string;
   binaryPath?: string;
   mmprojPath?: string;
+  gpuLayers?: number;
   timeoutMs?: number;
 };
 
@@ -106,6 +128,10 @@ export type MiyaWizardConfig = {
   workspaceDir?: string;
   datasetDir?: string;
   outputDir?: string;
+  trainer?: {
+    lora?: MiyaTrainerProfileConfig;
+    finetune?: MiyaTrainerProfileConfig;
+  };
 };
 
 export type MiyaPluginConfig = {
@@ -206,7 +232,7 @@ export function resolveVoiceConfig(config?: MiyaPluginConfig) {
       provider: config?.voice?.tts?.provider ?? "manual",
       modelPath: config?.voice?.tts?.modelPath ?? "",
       sampleRate: config?.voice?.tts?.sampleRate ?? 24000,
-      voiceId: config?.voice?.tts?.voiceId ?? "miya-default",
+      voiceId: config?.voice?.tts?.voiceId ?? "Vivian",
     },
     speakerId: {
       enabled: config?.voice?.speakerId?.enabled ?? false,
@@ -222,12 +248,22 @@ export function resolveVramSchedulerConfig(config?: MiyaPluginConfig) {
     enabled: config?.vramScheduler?.enabled ?? false,
     strategy: config?.vramScheduler?.strategy ?? "manual-lanes",
     defaultLane: config?.vramScheduler?.defaultLane ?? "interactive",
+    gpuIndex: Math.max(config?.vramScheduler?.gpuIndex ?? 0, 0),
+    minFreeMb: Math.max(config?.vramScheduler?.minFreeMb ?? 1024, 0),
+    telemetryCommand: config?.vramScheduler?.telemetryCommand?.trim() || "nvidia-smi",
+    telemetryArgs: config?.vramScheduler?.telemetryArgs ?? [],
+    allowForceEvict: config?.vramScheduler?.allowForceEvict ?? false,
+    fragmentationSlackMb: Math.max(config?.vramScheduler?.fragmentationSlackMb ?? 512, 0),
+    evictionCommand: config?.vramScheduler?.evictionCommand?.trim() || "",
+    evictionArgs: config?.vramScheduler?.evictionArgs ?? [],
+    defragCommand: config?.vramScheduler?.defragCommand?.trim() || "",
+    defragArgs: config?.vramScheduler?.defragArgs ?? [],
     lanes: config?.vramScheduler?.lanes ?? [
-      { lane: "interactive", priority: 100, maxModels: 1 },
-      { lane: "voice", priority: 90, maxModels: 2 },
-      { lane: "vision", priority: 70, maxModels: 1 },
-      { lane: "image", priority: 50, maxModels: 1 },
-      { lane: "training", priority: 20, maxModels: 1 },
+      { lane: "interactive", priority: 100, maxModels: 1, estimatedVramMb: 2048, evictable: false },
+      { lane: "voice", priority: 90, maxModels: 2, estimatedVramMb: 4096, evictable: false },
+      { lane: "vision", priority: 70, maxModels: 1, estimatedVramMb: 6144, evictable: true },
+      { lane: "image", priority: 50, maxModels: 1, estimatedVramMb: 12288, evictable: true },
+      { lane: "training", priority: 20, maxModels: 1, estimatedVramMb: 16384, evictable: true },
     ],
   };
 }
@@ -246,6 +282,7 @@ export function resolveVisionRuntimeConfig(config?: MiyaPluginConfig) {
     runtimeRoot: config?.vision?.runtimeRoot?.trim() || path.join(pluginRoot, "runtime", "vision", "llama.cpp"),
     binaryPath: config?.vision?.binaryPath?.trim() || "",
     mmprojPath: config?.vision?.mmprojPath?.trim() || "",
+    gpuLayers: Math.max(config?.vision?.gpuLayers ?? 99, 0),
     timeoutMs: Math.max(config?.vision?.timeoutMs ?? 60000, 1000),
   };
 }
@@ -257,8 +294,8 @@ export function resolveImageRuntimeConfig(config?: MiyaPluginConfig) {
     provider: config?.image?.provider ?? "sidecar",
     pythonCommand: config?.image?.pythonCommand?.trim() || config?.desktopWorker?.probe?.command?.trim() || "python",
     sidecarPath: config?.image?.sidecarPath?.trim() || path.join(pluginRoot, "worker", "image_sidecar.py"),
-    modelPreference: config?.image?.modelPreference ?? "fast",
-    timeoutMs: Math.max(config?.image?.timeoutMs ?? 60000, 1000),
+    modelPreference: config?.image?.modelPreference ?? "balanced",
+    timeoutMs: Math.max(config?.image?.timeoutMs ?? 180000, 1000),
   };
 }
 
@@ -269,5 +306,23 @@ export function resolveWizardConfig(config?: MiyaPluginConfig) {
     workspaceDir: config?.wizard?.workspaceDir ?? path.join(pluginRoot, "state", "wizard"),
     datasetDir: config?.wizard?.datasetDir ?? path.join(pluginRoot, "state", "wizard", "datasets"),
     outputDir: config?.wizard?.outputDir ?? path.join(pluginRoot, "state", "wizard", "jobs"),
+    trainer: {
+      lora: {
+        enabled: config?.wizard?.trainer?.lora?.enabled ?? false,
+        command: config?.wizard?.trainer?.lora?.command?.trim() || "",
+        args: config?.wizard?.trainer?.lora?.args ?? [],
+        cwd: config?.wizard?.trainer?.lora?.cwd?.trim() || "",
+        env: config?.wizard?.trainer?.lora?.env ?? {},
+        artifactGlobs: config?.wizard?.trainer?.lora?.artifactGlobs ?? ["**/*.safetensors", "**/*.bin", "**/*.json"],
+      },
+      finetune: {
+        enabled: config?.wizard?.trainer?.finetune?.enabled ?? false,
+        command: config?.wizard?.trainer?.finetune?.command?.trim() || "",
+        args: config?.wizard?.trainer?.finetune?.args ?? [],
+        cwd: config?.wizard?.trainer?.finetune?.cwd?.trim() || "",
+        env: config?.wizard?.trainer?.finetune?.env ?? {},
+        artifactGlobs: config?.wizard?.trainer?.finetune?.artifactGlobs ?? ["**/*.safetensors", "**/*.bin", "**/*.json"],
+      },
+    },
   };
 }

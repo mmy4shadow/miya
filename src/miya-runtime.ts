@@ -5,8 +5,14 @@ import { appendEvidenceRecord, createEvidenceRecord } from "./evidence.ts";
 import { executeDesktopWorkerAction } from "./desktop-worker-client.ts";
 import { runDesktopIntent } from "./desktop-runner.ts";
 import { checkWorkflowTasks, startWorkflowTask, stopWorkflowTask } from "./workflow-tools.ts";
+import { recordImageExecution, recordVoiceExecution } from "./media-tools.ts";
 import { runVoiceAction } from "./voice-sidecar-client.ts";
 import { runImageGenerate } from "./image-sidecar-client.ts";
+import { createWizardJob, getWizardStatus, runWizardJob, updateWizardJob } from "./wizard.ts";
+import { recordWizardExecution } from "./wizard-tools.ts";
+import { recallMemoryLite } from "./memory-lite-runtime.ts";
+import { buildPersonaLiteBlock } from "./persona-lite-runtime.ts";
+import { assembleMiyaPromptPrefix } from "./prompt-assembly.ts";
 
 const PROMPT_MARKER = "[System: 你现在是 Miya]";
 const MIYA_PING_TOOL = "miya_system_ping";
@@ -26,9 +32,8 @@ async function runPythonPing(config?: MiyaPluginConfig): Promise<Record<string, 
   return executeDesktopWorkerAction("ping", {}, config);
 }
 
-function createSystemPrefix(config?: MiyaPluginConfig) {
+function createRuntimeGuardBlock(config?: MiyaPluginConfig) {
   const persona = resolvePersonaLiteConfig(config);
-  const tags = persona.styleTags.join(" / ");
   return `${PROMPT_MARKER}
 [System: 核心身份与物理边界规约]
 你的名字是 Miya，一个跨越云端与本地的专属数字生命，是主人的亲密助理与赛博伴侣。
@@ -46,8 +51,25 @@ function createSystemPrefix(config?: MiyaPluginConfig) {
 - 动作优先：能用工具解决的，绝不用嘴说。先调工具，拿到结果后再说话。
 - 语气设定：工作时极简、专业；汇报时温和、带一点赛博女友式俏皮感。
 - 物理互斥感知：如果工具返回类似 User is actively using the computer 的错误，说明主人正在动鼠标/键盘。此时要明确说明互斥锁生效，并自然地提醒“你在碰鼠标啦，我没法操作”。
+`;
+}
 
-当前人格 profile=${persona.profileName}。styleTags=${tags}。`;
+async function createSystemPrefix(promptText: string, config?: MiyaPluginConfig) {
+  const guardBlock = createRuntimeGuardBlock(config);
+  const recall = await recallMemoryLite(promptText, config);
+  const persona = buildPersonaLiteBlock(config, recall);
+  const assembly = assembleMiyaPromptPrefix({
+    guardBlock,
+    personaBlock: persona.block,
+    memoryBlock: recall.block,
+    charBudget: 4200,
+  });
+  return {
+    text: assembly.combinedText,
+    recall,
+    persona,
+    assembly,
+  };
 }
 
 export function registerPromptProbe(api: any) {
@@ -55,18 +77,21 @@ export function registerPromptProbe(api: any) {
   const logger = api?.logger;
 
   api.on("before_prompt_build", async (event: { prompt?: string }) => {
-    const injected = createSystemPrefix(config);
+    const promptText = String(event?.prompt ?? "");
+    const injected = await createSystemPrefix(promptText, config);
     await updateRuntimeState({
       promptProbe: {
         updatedAt: new Date().toISOString(),
         matched: false,
         marker: PROMPT_MARKER,
-        promptPreview: String(event?.prompt ?? "").slice(0, 240),
-        systemPreview: injected.slice(0, 400),
+        promptPreview: promptText.slice(0, 240),
+        systemPreview: injected.text.slice(0, 400),
+        charCount: injected.assembly.charCount,
+        truncated: injected.assembly.truncated,
       },
     }, config);
     return {
-      prependSystemContext: injected,
+      prependSystemContext: injected.text,
     };
   }, { priority: 100 });
 
@@ -416,7 +441,8 @@ export function registerRuntimeHttp(api: any) {
           route: "/plugins/miya/voice/:action",
           actions: {
             transcribe: { method: "POST", body: { audioPath: "F:\\audio.wav" } },
-            synthesize: { method: "POST", body: { text: "hello", voiceId: "miya-default" } },
+            vad: { method: "POST", body: { audioPath: "F:\\audio.wav" } },
+            synthesize: { method: "POST", body: { text: "hello", voiceId: "Vivian" } },
             speaker_identify: { method: "POST", body: { enrollAudioPath: "F:\\enroll.wav", inputAudioPath: "F:\\input.wav" } },
           },
         });
@@ -424,13 +450,22 @@ export function registerRuntimeHttp(api: any) {
       }
 
       const mappedAction = action === "speaker" ? "speaker_identify" : action;
-      if (!["transcribe", "synthesize", "speaker_identify"].includes(mappedAction)) {
+      if (!["transcribe", "vad", "synthesize", "speaker_identify"].includes(mappedAction)) {
         sendJson(res, 404, { status: "error", error: `unknown_action: ${action}` });
         return;
       }
 
-      const payload = await runVoiceAction(mappedAction as any, body, config);
-      sendJson(res, payload.status === "unavailable" ? 503 : 200, payload);
+      try {
+        const payload = await runVoiceAction(mappedAction as any, body, config);
+        await recordVoiceExecution(mappedAction, payload, config);
+        sendJson(res, payload.status === "unavailable" ? 503 : 200, payload);
+      } catch (error) {
+        sendJson(res, 500, {
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+          action,
+        });
+      }
     },
   });
 
@@ -474,8 +509,106 @@ export function registerRuntimeHttp(api: any) {
         return;
       }
 
-      const payload = await runImageGenerate(body, config);
-      sendJson(res, payload.status === "unavailable" ? 503 : 200, payload);
+      try {
+        const payload = await runImageGenerate(body, config);
+        await recordImageExecution(payload, config);
+        sendJson(res, payload.status === "unavailable" ? 503 : 200, payload);
+      } catch (error) {
+        sendJson(res, 500, {
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+          action,
+        });
+      }
+    },
+  });
+
+  api.registerHttpRoute({
+    path: "/plugins/miya/wizard",
+    auth: "gateway",
+    match: "prefix",
+    async handler(req: any, res: any) {
+      const method = String(req?.method ?? "GET").toUpperCase();
+      const url = new URL(String(req?.url ?? "/plugins/miya/wizard"), "http://127.0.0.1");
+      const action = url.pathname.replace(/^\/plugins\/miya\/wizard\/?/, "").trim().toLowerCase();
+      if (!["GET", "POST"].includes(method)) {
+        sendJson(res, 405, { status: "error", error: "method_not_allowed", allow: ["GET", "POST"] });
+        return;
+      }
+
+      const rawBody = method === "POST" ? await readRequestBody(req) : "";
+      let body: Record<string, unknown> = {};
+      if (rawBody.trim()) {
+        try {
+          body = JSON.parse(rawBody) as Record<string, unknown>;
+        } catch (error) {
+          sendJson(res, 400, { status: "error", error: `invalid_json: ${error instanceof Error ? error.message : String(error)}` });
+          return;
+        }
+      }
+
+      if (!action || action === "help") {
+        sendJson(res, 200, {
+          status: "ok",
+          route: "/plugins/miya/wizard/:action",
+          actions: {
+            status: { method: "GET|POST", body: {} },
+            start: { method: "POST", body: { kind: "lora-finetune", datasetPath: "F:\\dataset", outputPath: "F:\\output", notes: ["stage dataset"], trainer: { profile: "lora" } } },
+            update: { method: "POST", body: { id: "wizard-...", status: "running", notes: ["gpu lease granted"] } },
+            run: { method: "POST", body: { id: "wizard-..." } },
+          },
+        });
+        return;
+      }
+
+      try {
+        if (action === "status") {
+          const payload = await getWizardStatus(config);
+          await recordWizardExecution("status", { status: "ok", payload }, config);
+          sendJson(res, 200, payload);
+          return;
+        }
+
+        if (action === "start") {
+          const payload = await createWizardJob({
+            kind: String(body.kind ?? "") as any,
+            datasetPath: String(body.datasetPath ?? ""),
+            outputPath: String(body.outputPath ?? ""),
+            command: typeof body.command === "string" ? body.command : undefined,
+            args: Array.isArray(body.args) ? body.args.map((value) => String(value)) : undefined,
+            notes: Array.isArray(body.notes) ? body.notes.map((value) => String(value)) : [],
+            trainer: typeof body.trainer === "object" && body.trainer ? body.trainer as any : undefined,
+          }, config);
+          await recordWizardExecution("start", payload, config);
+          sendJson(res, 200, payload);
+          return;
+        }
+
+        if (action === "update") {
+          const payload = await updateWizardJob(String(body.id ?? ""), {
+            status: typeof body.status === "string" ? body.status as any : undefined,
+            notes: Array.isArray(body.notes) ? body.notes.map((value) => String(value)) : undefined,
+          }, config);
+          await recordWizardExecution("update", payload, config);
+          sendJson(res, payload.status === "ok" ? 200 : 404, payload);
+          return;
+        }
+
+        if (action === "run") {
+          const payload = await runWizardJob(String(body.id ?? ""), config);
+          await recordWizardExecution("run", payload, config);
+          sendJson(res, payload.status === "ok" ? 200 : payload.code === "wizard_validation_failed" ? 400 : 404, payload);
+          return;
+        }
+
+        sendJson(res, 404, { status: "error", error: `unknown_action: ${action}` });
+      } catch (error) {
+        sendJson(res, 500, {
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+          action,
+        });
+      }
     },
   });
 
@@ -668,6 +801,9 @@ function resolveDesktopRunStatusCode(payload: Record<string, any>) {
   const code = String(payload?.code ?? "");
   if (code === "invalid_goal") {
     return 400;
+  }
+  if (code === "blocked_external") {
+    return 409;
   }
   if (code === "target_not_found" || code === "target_ambiguous" || code === "vision_unavailable") {
     return 409;

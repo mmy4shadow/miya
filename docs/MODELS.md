@@ -38,7 +38,8 @@ The plugin now exposes these logical mappings through diagnostics:
 ## Important notes
 
 - These are documented assets and mapped paths, not guaranteed running features.
-- The plugin does not claim to load or execute any of these models yet.
+- The plugin now has real local execution paths for mapped voice / image / vision assets when the required runtimes are installed.
+- Memory-lite assets remain documented-only until recall composition is implemented.
 - Path defaults assume the current OpenClaw state root is `F:\openclaw`.
 - Persona reference imagery also exists under `image/long_term/`.
 

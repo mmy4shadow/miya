@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "check": "node ./scripts/check.mjs",
-    "test": "node --test ./tests/workloop.test.mjs ./tests/workflow-queue.test.mjs ./tests/workflow-start-parser.test.mjs ./tests/workflow-commands.test.mjs ./tests/session-store-selfheal.test.mjs ./tests/dispatcher-selftest.test.mjs ./tests/desktop-worker-runner.test.mjs ./tests/probe-command-registration.test.mjs ./tests/runtime-http.test.mjs",
+    "test": "node --test ./tests/workloop.test.mjs ./tests/workflow-queue.test.mjs ./tests/workflow-start-parser.test.mjs ./tests/workflow-commands.test.mjs ./tests/session-store-selfheal.test.mjs ./tests/dispatcher-selftest.test.mjs ./tests/desktop-worker-runner.test.mjs ./tests/probe-command-registration.test.mjs ./tests/prompt-probe-runtime.test.mjs ./tests/memory-lite-runtime.test.mjs ./tests/persona-lite-runtime.test.mjs ./tests/prompt-assembly.test.mjs ./tests/dataset-validation.test.mjs ./tests/trainer-adapters.test.mjs ./tests/runtime-http.test.mjs ./tests/runtime-state.test.mjs ./tests/vram-scheduler.test.mjs ./tests/worker-client.test.mjs",
     "smoke": "node ./scripts/smoke.mjs",
     "acceptance": "node ./scripts/acceptance.mjs",
     "dispatcher:selftest": "node ./scripts/dispatcher-selftest.mjs",

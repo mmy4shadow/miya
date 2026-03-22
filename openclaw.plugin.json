@@ -99,6 +99,16 @@
           "enabled": { "type": "boolean", "default": false },
           "strategy": { "type": "string", "enum": ["manual-lanes", "none"], "default": "manual-lanes" },
           "defaultLane": { "type": "string", "enum": ["interactive", "voice", "vision", "image", "training"], "default": "interactive" },
+          "gpuIndex": { "type": "integer", "minimum": 0, "default": 0 },
+          "minFreeMb": { "type": "integer", "minimum": 0, "default": 1024 },
+          "telemetryCommand": { "type": "string", "default": "nvidia-smi" },
+          "telemetryArgs": { "type": "array", "items": { "type": "string" }, "default": [] },
+          "allowForceEvict": { "type": "boolean", "default": false },
+          "fragmentationSlackMb": { "type": "integer", "minimum": 0, "default": 512 },
+          "evictionCommand": { "type": "string", "default": "" },
+          "evictionArgs": { "type": "array", "items": { "type": "string" }, "default": [] },
+          "defragCommand": { "type": "string", "default": "" },
+          "defragArgs": { "type": "array", "items": { "type": "string" }, "default": [] },
           "lanes": {
             "type": "array",
             "items": {
@@ -107,7 +117,9 @@
               "properties": {
                 "lane": { "type": "string", "enum": ["interactive", "voice", "vision", "image", "training"] },
                 "priority": { "type": "integer", "default": 0 },
-                "maxModels": { "type": "integer", "minimum": 1, "default": 1 }
+                "maxModels": { "type": "integer", "minimum": 1, "default": 1 },
+                "estimatedVramMb": { "type": "integer", "minimum": 0, "default": 0 },
+                "evictable": { "type": "boolean", "default": true }
               },
               "required": ["lane"]
             },
@@ -129,6 +141,7 @@
           "runtimeRoot": { "type": "string", "default": "F:\\openclaw\\miya\\runtime\\vision\\llama.cpp" },
           "binaryPath": { "type": "string", "default": "" },
           "mmprojPath": { "type": "string", "default": "" },
+          "gpuLayers": { "type": "integer", "minimum": 0, "default": 99 },
           "timeoutMs": { "type": "integer", "minimum": 1000, "default": 60000 }
         }
       },
@@ -140,8 +153,8 @@
           "provider": { "type": "string", "enum": ["sidecar", "python", "none"], "default": "sidecar" },
           "pythonCommand": { "type": "string", "default": "python" },
           "sidecarPath": { "type": "string", "default": "F:\\openclaw\\miya\\worker\\image_sidecar.py" },
-          "modelPreference": { "type": "string", "enum": ["fast", "balanced"], "default": "fast" },
-          "timeoutMs": { "type": "integer", "minimum": 1000, "default": 60000 }
+          "modelPreference": { "type": "string", "enum": ["fast", "balanced"], "default": "balanced" },
+          "timeoutMs": { "type": "integer", "minimum": 1000, "default": 180000 }
         }
       },
       "wizard": {
@@ -151,7 +164,15 @@
           "enabled": { "type": "boolean", "default": false },
           "workspaceDir": { "type": "string", "default": "F:\\openclaw\\miya\\state\\wizard" },
           "datasetDir": { "type": "string", "default": "F:\\openclaw\\miya\\state\\wizard\\datasets" },
-          "outputDir": { "type": "string", "default": "F:\\openclaw\\miya\\state\\wizard\\jobs" }
+          "outputDir": { "type": "string", "default": "F:\\openclaw\\miya\\state\\wizard\\jobs" },
+          "trainer": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "lora": { "$ref": "#/$defs/trainerProfile" },
+              "finetune": { "$ref": "#/$defs/trainerProfile" }
+            }
+          }
         }
       }
     },
@@ -174,7 +195,23 @@
           "provider": { "type": "string", "enum": ["external-worker", "manual", "none"], "default": "manual" },
           "modelPath": { "type": "string", "default": "" },
           "sampleRate": { "type": "integer", "minimum": 8000, "default": 24000 },
-          "voiceId": { "type": "string", "default": "miya-default" }
+          "voiceId": { "type": "string", "default": "Vivian" }
+        }
+      },
+      "trainerProfile": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean", "default": false },
+          "command": { "type": "string", "default": "" },
+          "args": { "type": "array", "items": { "type": "string" }, "default": [] },
+          "cwd": { "type": "string", "default": "" },
+          "artifactGlobs": { "type": "array", "items": { "type": "string" }, "default": ["**/*.safetensors", "**/*.bin", "**/*.json"] },
+          "env": {
+            "type": "object",
+            "default": {},
+            "additionalProperties": { "type": "string" }
+          }
         }
       }
     }
